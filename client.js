@@ -1,14 +1,13 @@
 import dotenv from 'dotenv';
 import axios from 'axios';
-import { Horizon, Keypair, Asset, TransactionBuilder, Networks, Operation, BASE_FEE } from '@stellar/stellar-sdk';
+import { Horizon, Keypair, Asset, TransactionBuilder, Operation, BASE_FEE } from '@stellar/stellar-sdk';
+import { NETWORK_CONFIG } from './config.js';
 
 dotenv.config();
 
-// Configuración
-const HORIZON_URL = 'https://horizon-testnet.stellar.org';
-const SERVER_URL = 'http://localhost:3000';
-const NETWORK_PASSPHRASE = Networks.TESTNET;
-const horizon = new Horizon.Server(HORIZON_URL);
+// Configuración — red centralizada en config.js (MEJORA 6)
+const SERVER_URL = process.env.BASE_URL || 'http://localhost:3000';
+const horizon = new Horizon.Server(NETWORK_CONFIG.horizon);
 
 const AGENT_PUBLIC_KEY = process.env.AGENT_PUBLIC_KEY;
 const AGENT_SECRET_KEY = process.env.AGENT_SECRET_KEY;
@@ -53,7 +52,7 @@ async function payAndCall(method, endpoint, body = null) {
       paymentInfo.asset
     );
     console.log(`✅ Pago confirmado! TX: ${txHash}`);
-    console.log(`🔍 Ver en: https://stellar.expert/explorer/testnet/tx/${txHash}`);
+    console.log(`🔍 Ver en: ${NETWORK_CONFIG.explorerBase}/${txHash}`);
 
     // PASO 4: Construir header de pago
     const paymentHeader = Buffer.from(
@@ -89,7 +88,7 @@ async function makePayment(receiver, amount, assetCode) {
 
   const transaction = new TransactionBuilder(account, {
     fee: BASE_FEE,
-    networkPassphrase: NETWORK_PASSPHRASE,
+    networkPassphrase: NETWORK_CONFIG.passphrase,
   })
     .addOperation(Operation.payment({
       destination: receiver,
@@ -124,7 +123,7 @@ async function addUSDCTrustline() {
     const keypair = Keypair.fromSecret(AGENT_SECRET_KEY);
     const transaction = new TransactionBuilder(account, {
       fee: BASE_FEE,
-      networkPassphrase: NETWORK_PASSPHRASE,
+      networkPassphrase: NETWORK_CONFIG.passphrase,
     })
       .addOperation(Operation.changeTrust({
         asset: new Asset('USDC', USDC_ISSUER),

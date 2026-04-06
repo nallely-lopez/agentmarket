@@ -211,7 +211,7 @@
     .log-warning .log-msg { color: var(--warning); }
     .log-error   .log-msg { color: var(--error); }
     .log-result  .log-msg { color: #c084fc; white-space: pre; }
-    .log-link    .log-msg a { color: var(--primary-h); text-decoration: none; }
+    .log-link    .log-msg a { color: #1D9E75; text-decoration: none; font-weight: 600; }
     .log-link    .log-msg a:hover { text-decoration: underline; }
     .log-system  .log-msg { color: var(--text-dim); }
 
@@ -270,13 +270,15 @@
       return new Date().toLocaleTimeString('es', { hour12: false });
     }
 
-    function addLog(type, msg) {
+    // MEJORA 9: addLog acepta texto opcional para links (en vez de mostrar la URL cruda)
+    function addLog(type, msg, linkText) {
       const log = document.getElementById('log');
       const line = document.createElement('div');
       line.className = `log-line log-${type}`;
 
       if (type === 'link') {
-        line.innerHTML = `<span class="log-time">${ts()}</span><span class="log-msg"><a href="${msg}" target="_blank">${msg}</a></span>`;
+        const label = linkText || 'Ver en explorador →';
+        line.innerHTML = `<span class="log-time">${ts()}</span><span class="log-msg"><a href="${msg}" target="_blank">${label}</a></span>`;
       } else {
         line.innerHTML = `<span class="log-time">${ts()}</span><span class="log-msg">${escHtml(msg)}</span>`;
       }
@@ -340,14 +342,37 @@
           }
         }
       } catch (err) {
+        // MEJORA 8: error de red con mensaje de ayuda
         addLog('error', 'Error de conexión: ' + err.message);
+        const hint = getErrorHint(err.message);
+        if (hint) addLog('warning', `💡 ${hint}`);
+        else addLog('warning', '💡 No se puede conectar al servidor.');
       } finally {
         setButtons(false);
       }
     }
 
+    // MEJORA 8: Mensajes de ayuda según tipo de error
+    function getErrorHint(msg) {
+      const m = msg.toLowerCase();
+      if (m.includes('saldo insuficiente') || m.includes('necesita usdc')) {
+        return 'El agente se quedó sin USDC testnet. Fondea la wallet del agente.';
+      }
+      if (m.includes('timeout') || m.includes('tardó') || m.includes('econnaborted')) {
+        return 'El servidor tardó demasiado. Intenta de nuevo.';
+      }
+      if (m.includes('network') || m.includes('econnrefused') || m.includes('failed to fetch')) {
+        return 'No se puede conectar al servidor.';
+      }
+      return null;
+    }
+
     function handleEvent(e) {
       switch (e.step) {
+        // MEJORA 7: mostrar saldo antes del flujo
+        case 'balance':
+          addLog('info', `💰 ${e.message}`);
+          break;
         case 'calling':
           addLog('info', e.message);
           break;
@@ -361,8 +386,9 @@
           addLog('info', e.message);
           break;
         case 'payment_confirmed':
+          // MEJORA 9: link clickeable con texto descriptivo y URL desde el servidor
           addLog('success', `✔  Pago confirmado TX: ${e.txHash}`);
-          addLog('link', `https://stellar.expert/explorer/testnet/tx/${e.txHash}`);
+          addLog('link', e.explorerUrl, 'Ver en explorador →');
           addLog('info', `↪  Reintentando con comprobante de pago...`);
           break;
         case 'done': {
@@ -371,9 +397,13 @@
           addLog('result', pretty);
           break;
         }
-        case 'error':
+        case 'error': {
+          // MEJORA 8: error en rojo + mensaje de ayuda contextual
           addLog('error', `✖  ${e.message}`);
+          const hint = getErrorHint(e.message);
+          if (hint) addLog('warning', `💡 ${hint}`);
           break;
+        }
       }
     }
   </script>

@@ -2,7 +2,8 @@ import express from 'express';
 import dotenv from 'dotenv';
 import axios from 'axios';
 import { readFileSync } from 'fs';
-import { Horizon, Keypair, Asset, TransactionBuilder, Networks, Operation, BASE_FEE } from '@stellar/stellar-sdk';
+import { Horizon, Keypair, Asset, TransactionBuilder, Operation, BASE_FEE } from '@stellar/stellar-sdk';
+import { NETWORK_CONFIG } from './config.js';
 
 const DEMO_HTML = new URL('./demo.html', import.meta.url);
 
@@ -14,10 +15,8 @@ const BASE_URL = process.env.BASE_URL || `http://localhost:${process.env.PORT ||
 const app = express();
 app.use(express.json());
 
-// Configuración
-const NETWORK_PASSPHRASE = Networks.TESTNET;
-const HORIZON_URL = 'https://horizon-testnet.stellar.org';
-const server = new Horizon.Server(HORIZON_URL);
+// Configuración — red centralizada en config.js (MEJORA 6)
+const server = new Horizon.Server(NETWORK_CONFIG.horizon);
 
 const PROVIDER_PUBLIC_KEY = process.env.PROVIDER_PUBLIC_KEY;
 const PROVIDER_SECRET_KEY = process.env.PROVIDER_SECRET_KEY;
@@ -276,7 +275,7 @@ async function makeAgentPayment(receiver, amount, assetCode, issuer) {
 
   const tx = new TransactionBuilder(account, {
     fee: BASE_FEE,
-    networkPassphrase: NETWORK_PASSPHRASE,
+    networkPassphrase: NETWORK_CONFIG.passphrase,
   })
     .addOperation(Operation.payment({ destination: receiver, asset, amount }))
     .setTimeout(30)
@@ -316,6 +315,21 @@ app.post('/demo/run', async (req, res) => {
     : { method: 'GET',  url: BASE + '/services/price/BTC' };
 
   try {
+    // MEJORA 7: Consultar saldo USDC del agente antes del flujo
+    const agentPublic = process.env.AGENT_PUBLIC_KEY;
+    const agentAccount = await server.loadAccount(agentPublic);
+    const usdcBalance = agentAccount.balances.find(
+      b => b.asset_code === 'USDC' && b.asset_issuer === USDC_ASSET.getIssuer()
+    );
+    const balance = usdcBalance ? parseFloat(usdcBalance.balance) : 0;
+    send('balance', { message: `Saldo del agente: ${balance.toFixed(4)} USDC` });
+
+    if (balance < 0.01) {
+      send('error', { message: 'Saldo insuficiente. El agente necesita USDC.' });
+      res.end();
+      return;
+    }
+
     // Paso 1 — primera llamada, esperamos 402
     send('calling', { message: `Llamando al servicio: ${endpoint.method} ${endpoint.url}` });
 
@@ -344,6 +358,7 @@ app.post('/demo/run', async (req, res) => {
     send('payment_confirmed', {
       message: `Pago confirmado TX: ${txHash}`,
       txHash,
+      explorerUrl: `${NETWORK_CONFIG.explorerBase}/${txHash}`,
     });
 
     // Paso 3 — reintentar con comprobante
