@@ -20,7 +20,9 @@
       "Bash(git commit:*)",
       "Bash(git push:*)",
       "Bash(git pull:*)",
-      "Bash(git stash:*)"
+      "Bash(git stash:*)",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('OK -', d['marketplace'], '-', len\\(d['services']\\), 'servicios'\\)\" echo \"\" kill %1)",
+      "Bash(kill %1)"
     ]
   }
 }
