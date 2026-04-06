@@ -32,7 +32,9 @@
       "Bash(cmd.exe /C \"taskkill /PID 17744 /F\")",
       "Bash(cmd.exe:*)",
       "Bash(PORT=3001 node server.js)",
-      "Bash(git rm:*)"
+      "Bash(git rm:*)",
+      "Bash(PORT=3002 node server.js)",
+      "Bash(PORT=3003 node server.js)"
     ]
   }
 }
