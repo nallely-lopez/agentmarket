@@ -22,7 +22,17 @@
       "Bash(git pull:*)",
       "Bash(git stash:*)",
       "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('OK -', d['marketplace'], '-', len\\(d['services']\\), 'servicios'\\)\" echo \"\" kill %1)",
-      "Bash(kill %1)"
+      "Bash(kill %1)",
+      "Bash(rustup target:*)",
+      "Bash(stellar contract:*)",
+      "Bash(node -e \"const d=require\\('fs'\\).readFileSync\\('/dev/stdin','utf8'\\); const j=JSON.parse\\(d\\); console.log\\('marketplace:', j.marketplace, '| servicios:', j.services.length\\)\" echo \"\" echo \"=== /reputation/translate ===\" curl -s http://localhost:3000/reputation/translate echo \"\" kill %1)",
+      "Bash(node:*)",
+      "Bash(taskkill /PID 17744 /F)",
+      "Bash(kill -9 17744)",
+      "Bash(cmd.exe /C \"taskkill /PID 17744 /F\")",
+      "Bash(cmd.exe:*)",
+      "Bash(PORT=3001 node server.js)",
+      "Bash(git rm:*)"
     ]
   }
 }
