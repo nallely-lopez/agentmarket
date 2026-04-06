@@ -8,6 +8,9 @@ const DEMO_HTML = new URL('./demo.html', import.meta.url);
 
 dotenv.config();
 
+// MEJORA 2: BASE_URL configurable por variable de entorno (evita hardcodear localhost)
+const BASE_URL = process.env.BASE_URL || `http://localhost:${process.env.PORT || 3000}`;
+
 const app = express();
 app.use(express.json());
 
@@ -26,6 +29,11 @@ const USDC_ASSET = new Asset(
 );
 
 const SERVICE_PRICE = '0.001'; // USDC por servicio
+
+// MEJORA 3: Set global para protección contra replay attacks.
+// En producción esto debe persistirse en base de datos (Redis, Postgres, etc.)
+// para sobrevivir reinicios del servidor.
+const usedTxHashes = new Set();
 
 // ─────────────────────────────────────────
 // Función para verificar pago x402
@@ -55,7 +63,16 @@ async function verifyPayment(paymentHeader) {
       parseFloat(op.amount) >= parseFloat(SERVICE_PRICE)
     );
 
-    return !!paymentOp;
+    if (!paymentOp) return false;
+
+    // MEJORA 3: Protección contra replay attacks — rechaza txHash ya usado
+    if (usedTxHashes.has(txHash)) {
+      console.warn('Replay attack detectado — txHash ya usado:', txHash);
+      return false;
+    }
+    usedTxHashes.add(txHash);
+
+    return true;
   } catch (err) {
     console.error('Error verificando pago:', err.message);
     return false;
@@ -88,6 +105,13 @@ function x402Middleware(req, res, next) {
     next();
   });
 }
+
+// ─────────────────────────────────────────
+// MEJORA 1: /ping — evita cold start en Render
+// ─────────────────────────────────────────
+app.get('/ping', (req, res) => {
+  res.json({ status: 'ok', uptime: process.uptime(), time: new Date() });
+});
 
 // ─────────────────────────────────────────
 // SERVICIO 1: Catálogo (gratis)
@@ -126,37 +150,46 @@ app.post('/services/translate', x402Middleware, async (req, res) => {
     return res.status(400).json({ error: 'Falta el campo text' });
   }
 
-  try {
-    // Simulación de traducción (sin API key necesaria)
-    const translations = {
-      es: {
-        'hello': 'hola',
-        'world': 'mundo',
-        'agent': 'agente',
-        'payment': 'pago',
-        'market': 'mercado',
-        'how are you': 'cómo estás',
-        'good morning': 'buenos días',
-      },
-      en: {
-        'hola': 'hello',
-        'mundo': 'world',
-        'agente': 'agent',
-        'pago': 'payment',
-        'mercado': 'market',
-      },
-      fr: {
-        'hello': 'bonjour',
-        'world': 'monde',
-        'agent': 'agent',
-        'payment': 'paiement',
-      }
-    };
+  // MEJORA 5: Diccionario de fallback si MyMemory falla
+  const fallbackTranslations = {
+    es: {
+      'hello': 'hola', 'world': 'mundo', 'agent': 'agente',
+      'payment': 'pago', 'market': 'mercado',
+      'how are you': 'cómo estás', 'good morning': 'buenos días',
+    },
+    en: {
+      'hola': 'hello', 'mundo': 'world', 'agente': 'agent',
+      'pago': 'payment', 'mercado': 'market',
+    },
+    fr: {
+      'hello': 'bonjour', 'world': 'monde',
+      'agent': 'agent', 'payment': 'paiement',
+    }
+  };
 
-    const dict = translations[target_lang] || translations['es'];
-    let translated = text.toLowerCase();
-    for (const [key, val] of Object.entries(dict)) {
-      translated = translated.replace(new RegExp(key, 'gi'), val);
+  try {
+    // MEJORA 5: Traducción real con MyMemory API (no requiere API key)
+    const myMemoryUrl = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=en|${target_lang}`;
+    let translated;
+    let source = 'MyMemory API';
+
+    try {
+      const apiResp = await axios.get(myMemoryUrl, { timeout: 5000 });
+      const match = apiResp.data?.responseData?.translatedText;
+      if (match && apiResp.data?.responseStatus === 200) {
+        translated = match;
+      } else {
+        throw new Error('Respuesta inválida de MyMemory');
+      }
+    } catch (apiErr) {
+      // Fallback al diccionario si la API falla
+      console.warn('MyMemory falló, usando diccionario fallback:', apiErr.message);
+      const dict = fallbackTranslations[target_lang] || fallbackTranslations['es'];
+      translated = text.toLowerCase();
+      for (const [key, val] of Object.entries(dict)) {
+        translated = translated.replace(new RegExp(key, 'gi'), val);
+      }
+      source = 'fallback dictionary';
     }
 
     res.json({
@@ -164,6 +197,7 @@ app.post('/services/translate', x402Middleware, async (req, res) => {
       original: text,
       translated,
       target_lang,
+      source,
       paid: SERVICE_PRICE + ' USDC',
       service: 'AgentMarket Translator'
     });
@@ -274,7 +308,7 @@ app.post('/demo/run', async (req, res) => {
     res.write(`data: ${JSON.stringify({ step, ...payload })}\n\n`);
 
   const { service = 'translate' } = req.body;
-  const BASE = `http://localhost:${process.env.PORT || 3000}`;
+  const BASE = BASE_URL;
 
   const endpoint = service === 'translate'
     ? { method: 'POST', url: BASE + '/services/translate',
