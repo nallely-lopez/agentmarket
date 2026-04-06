@@ -28,7 +28,8 @@ const USDC_ASSET = new Asset(
   'GBYB7LIBRRVDHLJ55BKUC4SYUXJMP5PSLYQONGWCOCK5NCCICYYVOU3N'
 );
 
-const SERVICE_PRICE = '0.001'; // USDC por servicio
+const SERVICE_PRICE = '0.001';   // USDC por servicio (translate, price)
+const SENTIMENT_PRICE = '0.002'; // USDC por análisis de sentimiento
 
 // MEJORA 3: Set global para protección contra replay attacks.
 // En producción esto debe persistirse en base de datos (Redis, Postgres, etc.)
@@ -83,9 +84,9 @@ async function invokeReputationContract(serviceId, buyerAddress, amount) {
 // ─────────────────────────────────────────
 // Función para verificar pago x402
 // ─────────────────────────────────────────
-async function verifyPayment(paymentHeader) {
+async function verifyPayment(paymentHeader, requiredPrice = SERVICE_PRICE) {
   try {
-    if (!paymentHeader) return false;
+    if (!paymentHeader) return { valid: false };
 
     const { txHash, from } = JSON.parse(
       Buffer.from(paymentHeader, 'base64').toString('utf8')
@@ -93,11 +94,11 @@ async function verifyPayment(paymentHeader) {
 
     // Verificar la transacción en Horizon
     const tx = await server.transactions().transaction(txHash).call();
-    
+
     // Verificar que la transacción es reciente (menos de 5 minutos)
     const txTime = new Date(tx.created_at).getTime();
     const now = Date.now();
-    if (now - txTime > 5 * 60 * 1000) return false;
+    if (now - txTime > 5 * 60 * 1000) return { valid: false };
 
     // Verificar operaciones de pago
     const ops = await server.operations().forTransaction(txHash).call();
@@ -105,7 +106,7 @@ async function verifyPayment(paymentHeader) {
       op.type === 'payment' &&
       op.to === PROVIDER_PUBLIC_KEY &&
       op.asset_code === 'USDC' &&
-      parseFloat(op.amount) >= parseFloat(SERVICE_PRICE)
+      parseFloat(op.amount) >= parseFloat(requiredPrice)
     );
 
     if (!paymentOp) return false;
@@ -144,7 +145,7 @@ function x402Middleware(req, res, next) {
   }
 
   // Si hay header de pago, verificamos
-  verifyPayment(paymentHeader).then(({ valid, buyer }) => {
+  verifyPayment(paymentHeader, SERVICE_PRICE).then(({ valid, buyer }) => {
     if (!valid) {
       return res.status(402).json({ error: 'Pago inválido o no encontrado' });
     }
@@ -185,6 +186,13 @@ app.get('/services', (req, res) => {
         endpoint: 'GET /services/price/:symbol',
         price: SERVICE_PRICE + ' USDC',
         params: { symbol: 'BTC | ETH | XLM | USDC' }
+      },
+      {
+        id: 'sentiment',
+        name: 'Análisis de sentimiento',
+        endpoint: 'POST /services/sentiment',
+        price: SENTIMENT_PRICE + ' USDC',
+        body: { text: 'string' }
       }
     ]
   });
@@ -306,6 +314,77 @@ app.get('/services/price/:symbol', x402Middleware, async (req, res) => {
 });
 
 // ─────────────────────────────────────────
+// MEJORA 10 — Middleware x402 para servicios con precio distinto
+// ─────────────────────────────────────────
+function x402MiddlewareWithPrice(price) {
+  return function (req, res, next) {
+    const paymentHeader = req.headers['x-payment'];
+
+    if (!paymentHeader) {
+      return res.status(402).json({
+        error: 'Payment Required',
+        price,
+        asset: 'USDC',
+        network: 'testnet',
+        receiver: PROVIDER_PUBLIC_KEY,
+        usdc_issuer: 'GBYB7LIBRRVDHLJ55BKUC4SYUXJMP5PSLYQONGWCOCK5NCCICYYVOU3N',
+        instructions: `Envía ${price} USDC a ${PROVIDER_PUBLIC_KEY} y reenvía con header X-Payment`
+      });
+    }
+
+    verifyPayment(paymentHeader, price).then(({ valid, buyer }) => {
+      if (!valid) {
+        return res.status(402).json({ error: 'Pago inválido o no encontrado' });
+      }
+      const serviceId = req.path.replace('/services/', '').split('/')[0];
+      const amountStroops = Math.round(parseFloat(price) * 1e7);
+      invokeReputationContract(serviceId, buyer, amountStroops).catch(() => {});
+      next();
+    });
+  };
+}
+
+// ─────────────────────────────────────────
+// MEJORA 10 — SERVICIO 4: Análisis de sentimiento (requiere pago)
+// ─────────────────────────────────────────
+const POSITIVE_WORDS = new Set([
+  'good','great','excellent','love','happy','amazing','wonderful',
+  'bueno','excelente','amor','feliz','increíble','maravilloso'
+]);
+const NEGATIVE_WORDS = new Set([
+  'bad','terrible','hate','sad','awful','horrible','worst',
+  'malo','odio','triste','pésimo'
+]);
+
+app.post('/services/sentiment', x402MiddlewareWithPrice(SENTIMENT_PRICE), (req, res) => {
+  const { text } = req.body;
+  if (!text) return res.status(400).json({ error: 'Falta el campo text' });
+
+  const words = text.toLowerCase().match(/\b\w+\b/g) || [];
+  const positiveFound = words.filter(w => POSITIVE_WORDS.has(w));
+  const negativeFound = words.filter(w => NEGATIVE_WORDS.has(w));
+
+  const total = words.length || 1;
+  const rawScore = (positiveFound.length - negativeFound.length) / total;
+  const score = Math.max(-1, Math.min(1, parseFloat(rawScore.toFixed(4))));
+
+  let sentiment = 'neutral';
+  if (score > 0.05)  sentiment = 'positive';
+  if (score < -0.05) sentiment = 'negative';
+
+  res.json({
+    success:        true,
+    text,
+    sentiment,
+    score,
+    positive_words: [...new Set(positiveFound)],
+    negative_words: [...new Set(negativeFound)],
+    paid:           SENTIMENT_PRICE + ' USDC',
+    service:        'AgentMarket Sentiment'
+  });
+});
+
+// ─────────────────────────────────────────
 // PASO 6: GET /reputation/:service_id — consulta score on-chain
 // ─────────────────────────────────────────
 app.get('/reputation/:service_id', async (req, res) => {
@@ -412,10 +491,14 @@ app.post('/demo/run', async (req, res) => {
   const { service = 'translate' } = req.body;
   const BASE = BASE_URL;
 
-  const endpoint = service === 'translate'
-    ? { method: 'POST', url: BASE + '/services/translate',
-        data: { text: 'Hello world, this is an autonomous agent', target_lang: 'es' } }
-    : { method: 'GET',  url: BASE + '/services/price/BTC' };
+  const endpoints = {
+    translate: { method: 'POST', url: BASE + '/services/translate',
+                 data: { text: 'Hello world, this is an autonomous agent', target_lang: 'es' } },
+    price:     { method: 'GET',  url: BASE + '/services/price/BTC' },
+    sentiment: { method: 'POST', url: BASE + '/services/sentiment',
+                 data: { text: 'This is an amazing and wonderful product, I love it!' } },
+  };
+  const endpoint = endpoints[service] || endpoints.translate;
 
   try {
     // MEJORA 7: Consultar saldo USDC del agente antes del flujo
@@ -482,7 +565,7 @@ app.post('/demo/run', async (req, res) => {
     const contractId = process.env.REPUTATION_CONTRACT_ID;
     if (contractId) {
       try {
-        const serviceSlug = service === 'translate' ? 'translate' : 'price';
+        const serviceSlug = ['translate', 'price', 'sentiment'].includes(service) ? service : 'translate';
         const repResp = await axios.get(`${BASE_URL}/reputation/${serviceSlug}`, { timeout: 8000 });
         send('reputation', {
           message: `Reputación actualizada on-chain — score: ${repResp.data.score}`,

@@ -4,6 +4,7 @@
 [![Stellar](https://img.shields.io/badge/Stellar-Testnet-blue)](https://stellar.org)
 [![License](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
 [![Live Demo](https://img.shields.io/badge/Demo-Live-brightgreen)](https://agentmarket-21w2.onrender.com/demo)
+[![Soroban](https://img.shields.io/badge/Soroban-Contract-blue)](https://stellar.expert/explorer/testnet/contract/CC3XGTB67SCDXNV5QQUKECXR5JSQL354MVEZUFKYCEX22VRNSXBXSQHH)
 
 > A marketplace where AI agents autonomously discover, pay for, and consume services using x402 protocol and USDC micropayments on Stellar.
 
@@ -150,30 +151,21 @@ Free endpoint — returns the service catalog.
   "marketplace": "AgentMarket",
   "network": "Stellar Testnet",
   "services": [
-    {
-      "id": "translate",
-      "name": "Traductor de texto",
-      "endpoint": "POST /services/translate",
-      "price": "0.001 USDC"
-    },
-    {
-      "id": "price",
-      "name": "Precio de criptoactivo",
-      "endpoint": "GET /services/price/:symbol",
-      "price": "0.001 USDC"
-    }
+    { "id": "translate",  "endpoint": "POST /services/translate",       "price": "0.001 USDC" },
+    { "id": "price",      "endpoint": "GET /services/price/:symbol",    "price": "0.001 USDC" },
+    { "id": "sentiment",  "endpoint": "POST /services/sentiment",       "price": "0.002 USDC" }
   ]
 }
 ```
 
 ### POST /services/translate
-Requires payment of 0.001 USDC.
+Requires payment of 0.001 USDC. Calls MyMemory API for real translation (dictionary fallback).
 ```json
 // Request body
 { "text": "Hello world", "target_lang": "es" }
 
 // Response
-{ "success": true, "original": "Hello world", "translated": "hola mundo", "paid": "0.001 USDC" }
+{ "success": true, "original": "Hello world", "translated": "hola mundo", "source": "MyMemory API", "paid": "0.001 USDC" }
 ```
 
 ### GET /services/price/:symbol
@@ -183,8 +175,63 @@ Requires payment of 0.001 USDC. Supported symbols: `BTC`, `ETH`, `XLM`, `USDC`.
 { "success": true, "symbol": "BTC", "price_usd": 85000, "paid": "0.001 USDC" }
 ```
 
+### POST /services/sentiment
+Requires payment of 0.002 USDC. Analyzes sentiment in English and Spanish.
+```json
+// Request body
+{ "text": "This is an amazing and wonderful product!" }
+
+// Response
+{
+  "success": true, "sentiment": "positive", "score": 0.1538,
+  "positive_words": ["amazing", "wonderful"],
+  "negative_words": [],
+  "paid": "0.002 USDC", "service": "AgentMarket Sentiment"
+}
+```
+
+### GET /reputation/:service_id
+Free endpoint — queries on-chain reputation score from Soroban contract.
+```json
+// Response
+{ "service_id": "translate", "score": 1000, "total_payments": 1,
+  "contract_id": "CC3XGTB67SCDXNV5QQUKECXR5JSQL354MVEZUFKYCEX22VRNSXBXSQHH", "network": "testnet" }
+```
+
 ### GET /demo
 Returns the interactive demo UI (HTML page).
+
+---
+
+## Soroban Smart Contract
+
+Every successful payment is recorded on-chain in a Soroban smart contract deployed on Stellar Testnet. This builds a verifiable, tamper-proof reputation score for each service.
+
+**Contract ID:** `CC3XGTB67SCDXNV5QQUKECXR5JSQL354MVEZUFKYCEX22VRNSXBXSQHH`  
+**Explorer:** https://stellar.expert/explorer/testnet/contract/CC3XGTB67SCDXNV5QQUKECXR5JSQL354MVEZUFKYCEX22VRNSXBXSQHH
+
+| Function | Description |
+|----------|-------------|
+| `record_payment(service_id, buyer, amount)` | Accumulates reputation score for a service |
+| `get_score(service_id)` | Returns the accumulated score (i128) |
+| `get_total_payments()` | Returns total payments recorded (u32) |
+
+The contract uses **persistent storage** so scores survive ledger expiry. On-chain calls are fire-and-forget — contract failures never interrupt service delivery.
+
+---
+
+## Security
+
+AgentMarket implements four layers of payment security:
+
+| Protection | Implementation |
+|------------|---------------|
+| **Replay attack prevention** | `usedTxHashes` Set rejects any txHash seen before |
+| **Timestamp validation** | Transactions older than 5 minutes are rejected |
+| **Amount verification** | Payment must meet or exceed the service price |
+| **Receiver verification** | Payment must go to the provider's exact public key |
+
+> Note: `usedTxHashes` is in-memory. For production, persist it in Redis or PostgreSQL. See `MAINNET_CHECKLIST.md`.
 
 ---
 
@@ -202,9 +249,9 @@ Returns the interactive demo UI (HTML page).
 
 ### Funciones no terminadas / Unfinished features
 
-- **Soroban reputation contract** — The architecture includes a Soroban smart contract to record every transaction and build an on-chain reputation score per provider. This contract is described in the codebase but not deployed. The `contracts/` folder is empty.
+- **Soroban reputation contract** — ✅ Deployed. Contract `CC3XGTB67SCDXNV5QQUKECXR5JSQL354MVEZUFKYCEX22VRNSXBXSQHH` records every payment on-chain and exposes `GET /reputation/:service_id`. In-memory `usedTxHashes` needs Redis/PostgreSQL persistence for production (see `MAINNET_CHECKLIST.md`).
 
-- **Replay attack protection** — The current payment verification checks that the transaction exists and paid the correct amount to the correct address, but does not store used transaction hashes. A malicious client could reuse the same `txHash` across multiple requests. A production version needs a cache of used transaction hashes.
+- **Replay attack protection** — ✅ Implemented. `usedTxHashes` Set rejects duplicate txHashes. Production gap: the Set resets on server restart. Use Redis or a database for persistent protection.
 
 - **x402/express package** — The package `@x402/express` was planned for use but is not available at the expected version on npm. The x402 middleware is implemented manually in `server.js`. The implementation follows the x402 specification but is not the official library.
 
@@ -218,13 +265,16 @@ Returns the interactive demo UI (HTML page).
 
 ## Roadmap
 
-- [ ] Integrate real translation API (LibreTranslate or DeepL) behind x402
-- [ ] Deploy Soroban reputation contract on testnet
-- [ ] Add replay attack protection (txHash cache)
+- [x] Real translation via MyMemory API (dictionary fallback)
+- [x] Deploy Soroban reputation contract on testnet
+- [x] Replay attack protection (txHash deduplication)
+- [x] Transaction timestamp validation (5-minute window)
+- [x] Sentiment analysis service
+- [ ] Persist txHash cache in Redis/PostgreSQL for crash-safe replay protection
 - [ ] Add agent identity system using Stellar keypairs as identities
 - [ ] Integrate MPP SDK (Stellar Machine Payment Protocol) for streaming payments
 - [ ] Add more services: web scraping, image generation, data analysis
-- [ ] Deploy to Stellar mainnet with real USDC
+- [ ] Deploy to Stellar mainnet with real USDC (see `MAINNET_CHECKLIST.md`)
 - [ ] Build a service registration UI for providers
 
 ---

@@ -6,7 +6,10 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "client": "node client.js"
+    "client": "node client.js",
+    "setup": "node setup.js",
+    "fund": "node fund-agent.js",
+    "ping": "curl https://agentmarket-21w2.onrender.com/ping"
   },
   "keywords": [],
   "author": "",

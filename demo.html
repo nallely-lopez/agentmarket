@@ -101,7 +101,7 @@
     /* ── Actions ── */
     .actions {
       display: grid;
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: 1fr 1fr 1fr;
       gap: 1rem;
       padding: 1.5rem;
       border-bottom: 1px solid var(--border);
@@ -250,6 +250,11 @@
         <span class="btn-label">Consultar precio BTC</span>
         <span class="btn-price">Paga <strong>0.001 USDC</strong> automáticamente</span>
       </button>
+      <button class="btn" id="btn-sentiment" onclick="runDemo('sentiment')">
+        <span class="btn-icon">🧠</span>
+        <span class="btn-label">Analizar sentimiento</span>
+        <span class="btn-price">Paga <strong>0.002 USDC</strong> automáticamente</span>
+      </button>
     </div>
 
     <div class="terminal-header">
@@ -301,13 +306,15 @@
     function setButtons(disabled) {
       document.getElementById('btn-translate').disabled = disabled;
       document.getElementById('btn-price').disabled = disabled;
+      document.getElementById('btn-sentiment').disabled = disabled;
     }
 
     async function runDemo(service) {
       clearLog();
       setButtons(true);
 
-      const label = service === 'translate' ? 'Traducir texto' : 'Consultar precio BTC';
+      const labels = { translate: 'Traducir texto', price: 'Consultar precio BTC', sentiment: 'Analizar sentimiento' };
+      const label = labels[service] || service;
       addLog('system', `▶  Iniciando: ${label}`);
 
       try {
