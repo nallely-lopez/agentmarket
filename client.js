@@ -13,7 +13,7 @@ const horizon = new Horizon.Server(HORIZON_URL);
 const AGENT_PUBLIC_KEY = process.env.AGENT_PUBLIC_KEY;
 const AGENT_SECRET_KEY = process.env.AGENT_SECRET_KEY;
 
-const USDC_ISSUER = 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN';
+const USDC_ISSUER = 'GBYB7LIBRRVDHLJ55BKUC4SYUXJMP5PSLYQONGWCOCK5NCCICYYVOU3N';
 
 // ─────────────────────────────────────────
 // Función principal: pagar y consumir servicio

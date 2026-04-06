@@ -1,7 +1,10 @@
 import express from 'express';
 import dotenv from 'dotenv';
 import axios from 'axios';
+import { readFileSync } from 'fs';
 import { Horizon, Keypair, Asset, TransactionBuilder, Networks, Operation, BASE_FEE } from '@stellar/stellar-sdk';
+
+const DEMO_HTML = new URL('./demo.html', import.meta.url);
 
 dotenv.config();
 
@@ -19,7 +22,7 @@ const PROVIDER_SECRET_KEY = process.env.PROVIDER_SECRET_KEY;
 // USDC en Stellar testnet
 const USDC_ASSET = new Asset(
   'USDC',
-  'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN'
+  'GBYB7LIBRRVDHLJ55BKUC4SYUXJMP5PSLYQONGWCOCK5NCCICYYVOU3N'
 );
 
 const SERVICE_PRICE = '0.001'; // USDC por servicio
@@ -72,7 +75,7 @@ function x402Middleware(req, res, next) {
       asset: 'USDC',
       network: 'testnet',
       receiver: PROVIDER_PUBLIC_KEY,
-      usdc_issuer: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN',
+      usdc_issuer: 'GBYB7LIBRRVDHLJ55BKUC4SYUXJMP5PSLYQONGWCOCK5NCCICYYVOU3N',
       instructions: 'Envía ' + SERVICE_PRICE + ' USDC a ' + PROVIDER_PUBLIC_KEY + ' y reenvía con header X-Payment: <base64({"txHash":"...","from":"..."})>'
     });
   }
@@ -226,6 +229,109 @@ function getCoinId(symbol) {
   };
   return map[symbol.toUpperCase()] || symbol.toLowerCase();
 }
+
+// ─────────────────────────────────────────
+// Función de pago usada por /demo/run
+// ─────────────────────────────────────────
+async function makeAgentPayment(receiver, amount, assetCode, issuer) {
+  const agentPublic = process.env.AGENT_PUBLIC_KEY;
+  const agentSecret = process.env.AGENT_SECRET_KEY;
+  const keypair = Keypair.fromSecret(agentSecret);
+  const account = await server.loadAccount(agentPublic);
+  const asset   = assetCode === 'XLM' ? Asset.native() : new Asset(assetCode, issuer);
+
+  const tx = new TransactionBuilder(account, {
+    fee: BASE_FEE,
+    networkPassphrase: NETWORK_PASSPHRASE,
+  })
+    .addOperation(Operation.payment({ destination: receiver, asset, amount }))
+    .setTimeout(30)
+    .build();
+
+  tx.sign(keypair);
+  const result = await server.submitTransaction(tx);
+  return result.hash;
+}
+
+// ─────────────────────────────────────────
+// GET /demo — sirve la página de demo
+// ─────────────────────────────────────────
+app.get('/demo', (req, res) => {
+  res.type('html').send(readFileSync(DEMO_HTML));
+});
+
+// ─────────────────────────────────────────
+// POST /demo/run — ejecuta flujo x402 completo
+//   body: { service: 'translate' | 'price' }
+//   responde con SSE (text/event-stream)
+// ─────────────────────────────────────────
+app.post('/demo/run', async (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+
+  const send = (step, payload = {}) =>
+    res.write(`data: ${JSON.stringify({ step, ...payload })}\n\n`);
+
+  const { service = 'translate' } = req.body;
+  const BASE = `http://localhost:${process.env.PORT || 3000}`;
+
+  const endpoint = service === 'translate'
+    ? { method: 'POST', url: BASE + '/services/translate',
+        data: { text: 'Hello world, this is an autonomous agent', target_lang: 'es' } }
+    : { method: 'GET',  url: BASE + '/services/price/BTC' };
+
+  try {
+    // Paso 1 — primera llamada, esperamos 402
+    send('calling', { message: `Llamando al servicio: ${endpoint.method} ${endpoint.url}` });
+
+    let paymentInfo;
+    try {
+      await axios({ method: endpoint.method, url: endpoint.url, data: endpoint.data });
+    } catch (err) {
+      if (err.response?.status !== 402) throw err;
+      paymentInfo = err.response.data;
+      send('payment_required', {
+        message: `402 recibido — pagando ${paymentInfo.price} ${paymentInfo.asset} en Stellar...`,
+        price:    paymentInfo.price,
+        asset:    paymentInfo.asset,
+        receiver: paymentInfo.receiver,
+      });
+    }
+
+    // Paso 2 — realizar pago en Stellar
+    send('paying', { message: 'Firmando y enviando transacción Stellar...' });
+    const txHash = await makeAgentPayment(
+      paymentInfo.receiver,
+      paymentInfo.price,
+      paymentInfo.asset,
+      paymentInfo.usdc_issuer
+    );
+    send('payment_confirmed', {
+      message: `Pago confirmado TX: ${txHash}`,
+      txHash,
+    });
+
+    // Paso 3 — reintentar con comprobante
+    const paymentHeader = Buffer.from(
+      JSON.stringify({ txHash, from: process.env.AGENT_PUBLIC_KEY })
+    ).toString('base64');
+
+    const result = await axios({
+      method:  endpoint.method,
+      url:     endpoint.url,
+      data:    endpoint.data,
+      headers: { 'X-Payment': paymentHeader },
+    });
+
+    send('done', { message: 'Servicio entregado', data: result.data });
+
+  } catch (err) {
+    send('error', { message: err.response?.data?.error || err.message });
+  }
+
+  res.end();
+});
 
 // ─────────────────────────────────────────
 // Arrancar servidor
