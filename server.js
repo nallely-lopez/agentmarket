@@ -2,7 +2,8 @@ import express from 'express';
 import dotenv from 'dotenv';
 import axios from 'axios';
 import { readFileSync } from 'fs';
-import { Horizon, Keypair, Asset, TransactionBuilder, Operation, BASE_FEE } from '@stellar/stellar-sdk';
+import { Horizon, Keypair, Asset, TransactionBuilder, Operation, BASE_FEE,
+         Contract, rpc as SorobanRpc, nativeToScVal, scValToNative, Address } from '@stellar/stellar-sdk';
 import { NETWORK_CONFIG } from './config.js';
 
 const DEMO_HTML = new URL('./demo.html', import.meta.url);
@@ -33,6 +34,51 @@ const SERVICE_PRICE = '0.001'; // USDC por servicio
 // En producción esto debe persistirse en base de datos (Redis, Postgres, etc.)
 // para sobrevivir reinicios del servidor.
 const usedTxHashes = new Set();
+
+// ─────────────────────────────────────────
+// Soroban RPC — cliente para el contrato de reputación
+// ─────────────────────────────────────────
+const SOROBAN_RPC_URL = NETWORK_CONFIG.isMainnet
+  ? 'https://soroban-mainnet.stellar.org'
+  : 'https://soroban-testnet.stellar.org';
+
+const sorobanRpc = new SorobanRpc.Server(SOROBAN_RPC_URL);
+
+// Registra un pago en el contrato de reputación on-chain.
+// Falla silenciosamente: si el contrato falla, el servicio igual se entrega.
+async function invokeReputationContract(serviceId, buyerAddress, amount) {
+  const contractId = process.env.REPUTATION_CONTRACT_ID;
+  if (!contractId) return;
+
+  try {
+    const keypair  = Keypair.fromSecret(process.env.PROVIDER_SECRET_KEY);
+    const account  = await sorobanRpc.getAccount(keypair.publicKey());
+    const contract = new Contract(contractId);
+
+    const tx = new TransactionBuilder(account, {
+      fee: '1000000', // fee generosa para simulación Soroban
+      networkPassphrase: NETWORK_CONFIG.passphrase,
+    })
+      .addOperation(
+        contract.call(
+          'record_payment',
+          nativeToScVal(serviceId, { type: 'symbol' }),
+          new Address(buyerAddress).toScVal(),
+          nativeToScVal(amount, { type: 'i128' }),
+        )
+      )
+      .setTimeout(30)
+      .build();
+
+    // Simular primero (Soroban requiere prep de la transacción)
+    const preparedTx = await sorobanRpc.prepareTransaction(tx);
+    preparedTx.sign(keypair);
+    const result = await sorobanRpc.sendTransaction(preparedTx);
+    console.log(`Reputación registrada on-chain — serviceId=${serviceId} status=${result.status}`);
+  } catch (err) {
+    console.error('invokeReputationContract falló (no crítico):', err.message);
+  }
+}
 
 // ─────────────────────────────────────────
 // Función para verificar pago x402
@@ -71,10 +117,11 @@ async function verifyPayment(paymentHeader) {
     }
     usedTxHashes.add(txHash);
 
-    return true;
+    // Devuelve el address del pagador para que el middleware pueda registrar reputación
+    return { valid: true, buyer: from };
   } catch (err) {
     console.error('Error verificando pago:', err.message);
-    return false;
+    return { valid: false };
   }
 }
 
@@ -97,10 +144,14 @@ function x402Middleware(req, res, next) {
   }
 
   // Si hay header de pago, verificamos
-  verifyPayment(paymentHeader).then(valid => {
+  verifyPayment(paymentHeader).then(({ valid, buyer }) => {
     if (!valid) {
       return res.status(402).json({ error: 'Pago inválido o no encontrado' });
     }
+    // Registrar reputación on-chain (async, no bloquea la respuesta)
+    const serviceId = req.path.replace('/services/', '').split('/')[0];
+    const amountStroops = Math.round(parseFloat(SERVICE_PRICE) * 1e7);
+    invokeReputationContract(serviceId, buyer, amountStroops).catch(() => {});
     next();
   });
 }
@@ -254,6 +305,58 @@ app.get('/services/price/:symbol', x402Middleware, async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────
+// PASO 6: GET /reputation/:service_id — consulta score on-chain
+// ─────────────────────────────────────────
+app.get('/reputation/:service_id', async (req, res) => {
+  const contractId = process.env.REPUTATION_CONTRACT_ID;
+  if (!contractId) {
+    return res.status(503).json({ error: 'Contrato de reputación no configurado' });
+  }
+
+  const { service_id } = req.params;
+
+  try {
+    const contract = new Contract(contractId);
+    const keypair  = Keypair.fromSecret(process.env.PROVIDER_SECRET_KEY);
+    const account  = await sorobanRpc.getAccount(keypair.publicKey());
+
+    const buildQuery = (method, ...args) =>
+      new TransactionBuilder(account, {
+        fee: '1000000',
+        networkPassphrase: NETWORK_CONFIG.passphrase,
+      })
+        .addOperation(contract.call(method, ...args))
+        .setTimeout(30)
+        .build();
+
+    // Simular get_score
+    const scoreTx   = buildQuery('get_score', nativeToScVal(service_id, { type: 'symbol' }));
+    const scoreRes  = await sorobanRpc.simulateTransaction(scoreTx);
+
+    // Simular get_total_payments
+    const totalTx   = buildQuery('get_total_payments');
+    const totalRes  = await sorobanRpc.simulateTransaction(totalTx);
+
+    const score = SorobanRpc.Api.isSimulationSuccess(scoreRes) && scoreRes.result?.retval
+      ? Number(scValToNative(scoreRes.result.retval))
+      : 0;
+    const total = SorobanRpc.Api.isSimulationSuccess(totalRes) && totalRes.result?.retval
+      ? Number(scValToNative(totalRes.result.retval))
+      : 0;
+
+    res.json({
+      service_id,
+      score:          Number(score),
+      total_payments: Number(total),
+      contract_id:    contractId,
+      network:        NETWORK_CONFIG.isMainnet ? 'mainnet' : 'testnet',
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Error consultando reputación: ' + err.message });
+  }
+});
+
 function getCoinId(symbol) {
   const map = {
     BTC: 'bitcoin', ETH: 'ethereum',
@@ -374,6 +477,22 @@ app.post('/demo/run', async (req, res) => {
     });
 
     send('done', { message: 'Servicio entregado', data: result.data });
+
+    // PASO 7: Emitir score de reputación actualizado (best-effort, no bloquea)
+    const contractId = process.env.REPUTATION_CONTRACT_ID;
+    if (contractId) {
+      try {
+        const serviceSlug = service === 'translate' ? 'translate' : 'price';
+        const repResp = await axios.get(`${BASE_URL}/reputation/${serviceSlug}`, { timeout: 8000 });
+        send('reputation', {
+          message: `Reputación actualizada on-chain — score: ${repResp.data.score}`,
+          score:       repResp.data.score,
+          total:       repResp.data.total_payments,
+          contract_id: contractId,
+          contractUrl: `https://stellar.expert/explorer/${NETWORK_CONFIG.isMainnet ? 'public' : 'testnet'}/contract/${contractId}`,
+        });
+      } catch (_) { /* silencioso */ }
+    }
 
   } catch (err) {
     send('error', { message: err.response?.data?.error || err.message });

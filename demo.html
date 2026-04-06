@@ -397,6 +397,11 @@
           addLog('result', pretty);
           break;
         }
+        // PASO 7: Mostrar reputación on-chain con link al contrato
+        case 'reputation':
+          addLog('success', `⭐ ${e.message}`);
+          addLog('link', e.contractUrl, `Ver contrato en explorador →`);
+          break;
         case 'error': {
           // MEJORA 8: error en rojo + mensaje de ayuda contextual
           addLog('error', `✖  ${e.message}`);
